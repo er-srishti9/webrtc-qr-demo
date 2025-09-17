@@ -1,197 +1,206 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>PWA IndexedDB Sharing via WebRTC</title>
+  <title>PWA IndexedDB Sync with WebRTC and Dummy Data</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: auto; }
+    textarea { width: 100%; font-family: monospace; }
+    button { margin-top: 10px; padding: 10px 20px; font-size: 1em; }
+    #log { background: #f0f0f0; margin-top: 20px; height: 200px; overflow-y: auto; padding: 10px; }
+  </style>
 </head>
 <body>
-<h1>PWA DB Sharing Example</h1>
 
-<textarea id="log" rows="15" cols="80" readonly></textarea><br/>
-<button id="startCallBtn">Start Call (Offerer)</button>
-<button id="answerCallBtn">Answer Call (Answerer)</button><br/><br/>
+<h1>WebRTC IndexedDB Sync with Manual SDP and Dummy Data</h1>
 
-<textarea id="localSDP" placeholder="Local SDP" rows="6" cols="80"></textarea><br/>
-<textarea id="remoteSDP" placeholder="Paste Remote SDP here" rows="6" cols="80"></textarea><br/>
-<button id="setRemoteSDPbtn">Set Remote SDP</button><br/><br/>
+<button id="btnStartOffer">Start Call (Create Offer)</button><br/>
+<textarea id="offerSdp" rows="6" placeholder="Offer SDP"></textarea><br/>
 
-<button id="sendDataBtn" disabled>Send DB Data</button>
+<button id="btnStartAnswer">Answer Call (Create Answer)</button><br/>
+<textarea id="answerSdp" rows="6" placeholder="Answer SDP"></textarea><br/>
+
+<textarea id="remoteSdp" rows="6" placeholder="Paste remote SDP here"></textarea><br/>
+<button id="btnSetRemote">Set Remote Description</button><br/>
+
+<button id="btnAddDummyData">Add Dummy Data to IndexedDB</button><br/>
+<button id="btnSendData" disabled>Send IndexedDB Data</button>
+
+<div id="log"></div>
 
 <script>
-// IndexedDB utils
-const dbName = "myPwaDB";
-const storeName = "myStore";
+  const logEl = document.getElementById('log');
+  function log(msg) {
+    logEl.textContent += msg + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+    console.log(msg);
+  }
 
-// Open DB and create store if needed
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(dbName, 1);
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-    request.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(storeName)) {
-        db.createObjectStore(storeName, { keyPath: "id" });
-      }
-    };
-  });
-}
+  // IndexedDB helpers
+  const dbName = "pwaSyncDB";
+  const storeName = "items";
 
-// Add sample data
-async function addSampleData() {
-  const db = await openDB();
-  const tx = db.transaction(storeName, "readwrite");
-  const store = tx.objectStore(storeName);
-  await store.put({ id: "1", data: "Hello from PWA 1!" });
-  await tx.complete;
-}
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(storeName)) {
+          db.createObjectStore(storeName, { keyPath: "id" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
 
-// Read all data from IndexedDB
-async function readAllData() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readonly");
+  async function writeDataToIndexedDB(items) {
+    const db = await openDB();
+    const tx = db.transaction(storeName, "readwrite");
     const store = tx.objectStore(storeName);
-    const items = [];
-    const request = store.openCursor();
-    request.onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (cursor) {
-        items.push(cursor.value);
-        cursor.continue();
-      } else {
-        resolve(items);
+    for (const item of items) {
+      await store.put(item);
+    }
+    return tx.complete;
+  }
+
+  async function readDataFromIndexedDB() {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readonly");
+      const store = tx.objectStore(storeName);
+      const results = [];
+      const request = store.openCursor();
+      request.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          results.push(cursor.value);
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+      request.onerror = (e) => reject(e);
+    });
+  }
+
+  // Add dummy data button handler
+  document.getElementById('btnAddDummyData').onclick = async () => {
+    const dummyData = [
+      { id: 1, text: "Dummy note 1", timestamp: Date.now() },
+      { id: 2, text: "Dummy note 2", timestamp: Date.now() },
+      { id: 3, text: "Dummy note 3", timestamp: Date.now() }
+    ];
+    await writeDataToIndexedDB(dummyData);
+    log("Dummy data added to IndexedDB.");
+  };
+
+  // WebRTC setup
+  let pc;
+  let dataChannel;
+
+  const btnStartOffer = document.getElementById("btnStartOffer");
+  const offerSdpTextarea = document.getElementById("offerSdp");
+  const btnStartAnswer = document.getElementById("btnStartAnswer");
+  const answerSdpTextarea = document.getElementById("answerSdp");
+  const remoteSdpTextarea = document.getElementById("remoteSdp");
+  const btnSetRemote = document.getElementById("btnSetRemote");
+  const btnSendData = document.getElementById("btnSendData");
+
+  function createPeerConnection(isOfferer) {
+    pc = new RTCPeerConnection();
+
+    if (isOfferer) {
+      dataChannel = pc.createDataChannel("pwaSyncChannel");
+      setupDataChannel();
+    } else {
+      pc.ondatachannel = (event) => {
+        dataChannel = event.channel;
+        setupDataChannel();
+      };
+    }
+
+    pc.onicecandidate = (event) => {
+      if (!event.candidate) {
+        const desc = pc.localDescription;
+        if (isOfferer) {
+          offerSdpTextarea.value = JSON.stringify(desc);
+          log("Offer SDP created");
+        } else {
+          answerSdpTextarea.value = JSON.stringify(desc);
+          log("Answer SDP created");
+        }
       }
     };
-    request.onerror = () => reject(request.error);
-  });
-}
-
-// Write array of objects to IndexedDB
-async function writeAllData(items) {
-  const db = await openDB();
-  const tx = db.transaction(storeName, "readwrite");
-  const store = tx.objectStore(storeName);
-  for (const item of items) {
-    await store.put(item);
   }
-  await tx.complete;
-}
 
-// Logging helper
-function log(msg) {
-  logArea.value += msg + "\n";
-  logArea.scrollTop = logArea.scrollHeight;
-}
-
-// WebRTC vars
-let pc;
-let dataChannel;
-
-const logArea = document.getElementById("log");
-const startCallBtn = document.getElementById("startCallBtn");
-const answerCallBtn = document.getElementById("answerCallBtn");
-const localSDPText = document.getElementById("localSDP");
-const remoteSDPText = document.getElementById("remoteSDP");
-const setRemoteSDPbtn = document.getElementById("setRemoteSDPbtn");
-const sendDataBtn = document.getElementById("sendDataBtn");
-
-// Chunk large string into parts of given size
-function chunkString(str, length) {
-  let chunks = [];
-  let i = 0;
-  while (i < str.length) {
-    chunks.push(str.slice(i, i + length));
-    i += length;
-  }
-  return chunks;
-}
-
-// Create peer connection & set event handlers
-function createPeerConnection(isOfferer) {
-  pc = new RTCPeerConnection();
-
-  if (isOfferer) {
-    dataChannel = pc.createDataChannel("pwaData");
-    setupDataChannel();
-  } else {
-    pc.ondatachannel = (event) => {
-      dataChannel = event.channel;
-      setupDataChannel();
+  function setupDataChannel() {
+    dataChannel.onopen = () => {
+      log("Data channel open");
+      btnSendData.disabled = false;
+    };
+    dataChannel.onclose = () => {
+      log("Data channel closed");
+      btnSendData.disabled = true;
+    };
+    let receivedData = "";
+    dataChannel.onmessage = async (event) => {
+      if (event.data === "__END__") {
+        log("All data received, saving to IndexedDB...");
+        const items = JSON.parse(receivedData);
+        await writeDataToIndexedDB(items);
+        log("Data saved to IndexedDB: " + JSON.stringify(items));
+        receivedData = "";
+      } else {
+        receivedData += event.data;
+      }
     };
   }
 
-  pc.onicecandidate = (event) => {
-    if (!event.candidate) {
-      localSDPText.value = JSON.stringify(pc.localDescription);
-      log("Local SDP set");
+  function chunkString(str, size = 16000) {
+    const chunks = [];
+    for (let i = 0; i < str.length; i += size) {
+      chunks.push(str.slice(i, i + size));
     }
-  };
-}
+    return chunks;
+  }
 
-function setupDataChannel() {
-  dataChannel.onopen = () => {
-    log("Data channel is open");
-    sendDataBtn.disabled = false;
+  btnStartOffer.onclick = async () => {
+    createPeerConnection(true);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
   };
-  dataChannel.onclose = () => {
-    log("Data channel is closed");
-    sendDataBtn.disabled = true;
+
+  btnStartAnswer.onclick = async () => {
+    createPeerConnection(false);
+    const offerDesc = JSON.parse(offerSdpTextarea.value);
+    await pc.setRemoteDescription(offerDesc);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
   };
-  let receivedData = "";
-  dataChannel.onmessage = async (event) => {
-    if (event.data === "__END__") {
-      log("DB data fully received, parsing...");
-      const dbObjects = JSON.parse(receivedData);
-      await writeAllData(dbObjects);
-      log("DB data written to IndexedDB");
-      receivedData = "";
-    } else {
-      receivedData += event.data;
-      log(`Received chunk size: ${event.data.length}`);
+
+  btnSetRemote.onclick = async () => {
+    const remoteDesc = JSON.parse(remoteSdpTextarea.value);
+    await pc.setRemoteDescription(remoteDesc);
+    log("Remote SDP set");
+  };
+
+  btnSendData.onclick = async () => {
+    if (!dataChannel || dataChannel.readyState !== "open") {
+      alert("Data channel is not open!");
+      return;
     }
+    const allData = await readDataFromIndexedDB();
+    const serialized = JSON.stringify(allData);
+    const chunks = chunkString(serialized);
+
+    log(`Sending data in ${chunks.length} chunks...`);
+    for (const chunk of chunks) {
+      dataChannel.send(chunk);
+    }
+    dataChannel.send("__END__");
+    log("Data sending complete.");
   };
-}
-
-startCallBtn.onclick = async () => {
-  createPeerConnection(true);
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-};
-
-answerCallBtn.onclick = async () => {
-  createPeerConnection(false);
-  const offer = JSON.parse(localSDPText.value);
-  await pc.setRemoteDescription(offer);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  localSDPText.value = JSON.stringify(pc.localDescription);
-};
-
-setRemoteSDPbtn.onclick = async () => {
-  const remoteDesc = JSON.parse(remoteSDPText.value);
-  await pc.setRemoteDescription(remoteDesc);
-  log("Remote SDP set");
-};
-
-sendDataBtn.onclick = async () => {
-  if (!dataChannel || dataChannel.readyState !== "open") {
-    alert("Data channel not open");
-    return;
-  }
-  const allData = await readAllData();
-  const serialized = JSON.stringify(allData);
-  const chunks = chunkString(serialized, 16000); // 16Kb chunks
-
-  log(`Sending DB data in ${chunks.length} chunks`);
-  for (const chunk of chunks) {
-    dataChannel.send(chunk);
-  }
-  dataChannel.send("__END__");
-  log("DB data send complete");
-};
-
-// Add sample data to DB on load
-addSampleData().then(() => log("Sample data added to IndexedDB"));
 </script>
+
 </body>
 </html>
