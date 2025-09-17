@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebRTC QR Code Signaling Example</title>
+  <title>WebRTC QR Signaling with Correct CDN</title>
   <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
@@ -43,9 +43,7 @@
 <h1 style="text-align:center;">WebRTC QR Code Signaling Demo</h1>
 
 <div id="container">
-  <div id="myQR">
-    <h3>Your SDP QR Code</h3>
-  </div>
+  <div id="myQR"><h3>Your SDP QR Code</h3></div>
   <div>
     <h3>Scan Remote SDP QR Code</h3>
     <div id="reader" style="width: 300px; height: 300px;"></div>
@@ -61,7 +59,6 @@
 
 <script>
   const myQRDiv = document.getElementById('myQR');
-  const statusDiv = document.getElementById('status');
   const messagesDiv = document.getElementById('messages');
   const sendBtn = document.getElementById('sendBtn');
   const messageInput = document.getElementById('message');
@@ -73,7 +70,6 @@
   // Initialize html5-qrcode scanner
   const html5QrcodeScanner = new Html5Qrcode("reader");
 
-  // Display messages
   function logMessage(msg) {
     messagesDiv.textContent += msg + "\n";
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -103,7 +99,6 @@
 
     localConnection.onicecandidate = (event) => {
       if (!event.candidate) {
-        // ICE gathering complete
         generateQR(localConnection.localDescription);
         logMessage("Offer SDP generated. Share your QR code.");
       }
@@ -117,7 +112,6 @@
     const remoteSDP = decompressSDP(compressedSDP.trim());
 
     if (!localConnection) {
-      // We are answerer
       localConnection = new RTCPeerConnection();
 
       localConnection.ondatachannel = (event) => {
@@ -137,20 +131,17 @@
       await localConnection.setLocalDescription(answer);
 
     } else {
-      // We are offerer receiving answer
       await localConnection.setRemoteDescription(remoteSDP);
       logMessage("Connection established! You can send messages now.");
     }
   }
 
-  // Setup data channel events for sender
   function setupDataChannelEvents() {
     dataChannel.onopen = () => logMessage("Data channel open");
     dataChannel.onclose = () => logMessage("Data channel closed");
     dataChannel.onmessage = (event) => logMessage("Remote: " + event.data);
   }
 
-  // Setup data channel events for receiver
   function setupReceiveChannelEvents() {
     receiveChannel.onopen = () => logMessage("Data channel open");
     receiveChannel.onclose = () => logMessage("Data channel closed");
@@ -161,48 +152,36 @@
     const msg = messageInput.value.trim();
     if (!msg) return;
 
-    if ((dataChannel && dataChannel.readyState === "open")) {
+    if (dataChannel && dataChannel.readyState === "open") {
       dataChannel.send(msg);
       logMessage("You: " + msg);
-    } else if ((receiveChannel && receiveChannel.readyState === "open")) {
+    } else if (receiveChannel && receiveChannel.readyState === "open") {
       receiveChannel.send(msg);
       logMessage("You: " + msg);
     } else {
-      alert("Data channel not open. Cannot send message.");
+      alert("Data channel is not open.");
     }
     messageInput.value = "";
   };
 
-  // Start QR code scanner with back camera
   html5QrcodeScanner.start(
-    { facingMode: { exact: "environment" } },
-    {
-      fps: 15,
-      qrbox: 280,
-      aspectRatio: 1,
-      disableFlip: false
-    },
+    { facingMode: { ideal: "environment" } },
+    { fps: 15, qrbox: 280, aspectRatio: 1.0, disableFlip: false },
     (decodedText) => {
       logMessage("Scanned SDP QR code.");
       html5QrcodeScanner.pause();
       onRemoteSDPReceived(decodedText);
-      // Resume scanning after 15 seconds for next possible SDP
-      setTimeout(() => {
-        html5QrcodeScanner.resume();
-      }, 15000);
+      setTimeout(() => html5QrcodeScanner.resume(), 15000);
     },
     (errorMessage) => {
-      // You can log scan errors if you want
+      // error handling here if needed
     }
   ).catch((err) => {
     alert("Unable to start scanning: " + err);
   });
 
-  // Start as the Offerer, creates offer and shows QR
   createOffer();
 
 </script>
-
 </body>
 </html>
-
