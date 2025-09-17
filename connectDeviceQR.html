@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>WebRTC Manual Signaling with QR Codes</title>
+  <style>
+    textarea { width: 100%; height: 60px; }
+    button { margin: 5px; }
+    #qrOffer, #qrAnswer { margin: 10px 0; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+</head>
+<body>
+  <h2>WebRTC Signaling with QR Codes</h2>
+
+  <!-- Caller controls -->
+  <button id="createOfferBtn">Create Offer (Caller)</button>
+  <div id="qrOffer"></div>
+
+  <!-- Receiver scanning caller's offer -->
+  <h4>Scan Offer QR (Receiver)</h4>
+  <div id="reader" style="width:300px;"></div>
+
+  <!-- Answer display -->
+  <h4>Answer SDP (Receiver creates)</h4>
+  <textarea id="answerSDP" readonly></textarea>
+  <div id="qrAnswer"></div>
+
+  <!-- Caller scans answer -->
+  <h4>Scan Answer QR (Caller)</h4>
+  <div id="readerAnswer" style="width:300px;"></div>
+
+  <!-- Messages and input -->
+  <h3>Messages</h3>
+  <pre id="messages"></pre>
+  <input id="messageInput" placeholder="Type message" />
+  <button id="sendMessageBtn">Send</button>
+
+  <script>
+    let localConnection;
+    let remoteConnection;
+    let dataChannel;
+    let receiveChannel;
+
+    const qrOfferDiv = document.getElementById('qrOffer');
+    const qrAnswerDiv = document.getElementById('qrAnswer');
+    const answerSDPTextarea = document.getElementById('answerSDP');
+    const messagesPre = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+
+    const config = { iceServers: [] };
+    let html5QrcodeScanner;
+    let html5QrcodeScannerAnswer;
+
+    function appendMessage(msg) {
+      messagesPre.textContent += msg + '\n';
+    }
+
+    // Caller: Create WebRTC offer and display QR code
+    document.getElementById('createOfferBtn').onclick = async () => {
+      localConnection = new RTCPeerConnection(config);
+
+      dataChannel = localConnection.createDataChannel('dataChannel');
+      setupDataChannel();
+
+      localConnection.onicecandidate = event => {
+        if (event.candidate === null) {
+          const offerSDPText = JSON.stringify(localConnection.localDescription);
+          qrOfferDiv.innerHTML = '';
+          new QRCode(qrOfferDiv, { text: offerSDPText, width: 250, height: 250 });
+        }
+      };
+
+      try {
+        const offer = await localConnection.createOffer();
+        await localConnection.setLocalDescription(offer);
+      } catch (e) {
+        alert('Error creating offer: ' + e);
+      }
+    };
+
+    // Receiver: Scan caller's SDP offer QR code and create answer
+    function startOfferScan() {
+      if (html5QrcodeScanner) html5QrcodeScanner.clear();
+      html5QrcodeScanner = new Html5Qrcode("reader");
+
+      html5QrcodeScanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        qrCodeMessage => {
+          html5QrcodeScanner.stop();
+          handleReceivedOffer(qrCodeMessage);
+        },
+        errorMessage => {
+          // console.log('QR scan error', errorMessage);
+        }
+      ).catch(err => console.error('QR scan failed to start', err));
+    }
+
+    async function handleReceivedOffer(offerSDPText) {
+      remoteConnection = new RTCPeerConnection(config);
+
+      remoteConnection.ondatachannel = event => {
+        receiveChannel = event.channel;
+        receiveChannel.onmessage = e => appendMessage('Received: ' + e.data);
+        receiveChannel.onopen = () => appendMessage('Data channel open');
+        receiveChannel.onclose = () => appendMessage('Data channel closed');
+      };
+
+      remoteConnection.onicecandidate = event => {
+        if (event.candidate === null) {
+          // After ICE gathering complete, create QR for answer
+          const answerSDPText = JSON.stringify(remoteConnection.localDescription);
+          answerSDPTextarea.value = answerSDPText;
+          qrAnswerDiv.innerHTML = '';
+          new QRCode(qrAnswerDiv, { text: answerSDPText, width: 250, height: 250 });
+          startAnswerScan(); // Start scanning caller's answer QR
+        }
+      };
+
+      try {
+        const offerSDP = JSON.parse(offerSDPText);
+        await remoteConnection.setRemoteDescription(offerSDP);
+        const answer = await remoteConnection.createAnswer();
+        await remoteConnection.setLocalDescription(answer);
+      } catch (e) {
+        alert('Error processing offer: ' + e);
+      }
+    }
+
+    // Caller: Scan receiver's answer QR and finalize connection
+    function startAnswerScan() {
+      if (html5QrcodeScannerAnswer) html5QrcodeScannerAnswer.clear();
+      html5QrcodeScannerAnswer = new Html5Qrcode("readerAnswer");
+
+      html5QrcodeScannerAnswer.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        qrCodeMessage => {
+          html5QrcodeScannerAnswer.stop();
+          handleReceivedAnswer(qrCodeMessage);
+        },
+        errorMessage => {
+          // console.log('Answer QR scan error', errorMessage);
+        }
+      ).catch(err => console.error('Answer QR scan failed to start', err));
+    }
+
+    async function handleReceivedAnswer(answerSDPText) {
+      try {
+        const answerSDP = JSON.parse(answerSDPText);
+        await localConnection.setRemoteDescription(answerSDP);
+        appendMessage('Connection established! You can send messages now.');
+      } catch (e) {
+        alert('Error processing answer: ' + e);
+      }
+    }
+
+    // Setup data channel event handlers for sending device
+    function setupDataChannel() {
+      dataChannel.onopen = () => appendMessage('Send channel open');
+      dataChannel.onclose = () => appendMessage('Send channel closed');
+      dataChannel.onmessage = e => appendMessage('Received: ' + e.data);
+    }
+
+    // Send message button
+    document.getElementById('sendMessageBtn').onclick = () => {
+      if (dataChannel && dataChannel.readyState === 'open') {
+        const message = messageInput.value;
+        dataChannel.send(message);
+        appendMessage('Sent: ' + message);
+        messageInput.value = '';
+      } else {
+        alert('Data channel not open');
+      }
+    };
+
+    // Start scanning for offer QR on page load to simulate receiver scanning
+    startOfferScan();
+  </script>
+</body>
+</html>
