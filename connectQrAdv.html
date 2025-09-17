@@ -1,188 +1,71 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebRTC QR Code Signaling - Enhanced</title>
+  <title>Enhanced QR Scanner with html5-qrcode</title>
   <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="https://unpkg.com/html5-qrcode@2.3.7/minified/html5-qrcode.min.js"></script>
   <style>
-    #qrContainer { display: flex; gap: 20px; }
-    #myQR, #reader { max-width: 300px; }
-    body { font-family: Arial, sans-serif; margin: 20px; }
+    #reader { width: 100%; max-width: 400px; height: 300px; }
   </style>
 </head>
 <body>
-  <h1>WebRTC QR Signaling Demo - Enhanced Mobile Performance</h1>
-
-  <div id="qrContainer">
-    <div>
-      <h3>My SDP QR</h3>
-      <div id="myQR"></div>
-    </div>
-    <div>
-      <h3>Scan Remote SDP QR</h3>
-      <div id="reader" style="width:300px; height:300px;"></div>
-    </div>
-  </div>
-
-  <h3>Status</h3>
-  <div id="status">Idle</div>
-
-  <h3>Send Message</h3>
-  <input id="msgInput" placeholder="Type message..." style="width: 300px;"/>
-  <button id="sendBtn">Send</button>
-
-  <h3>Messages</h3>
-  <pre id="messages" style="border: 1px solid #ccc; padding: 10px; max-width: 600px; max-height: 200px; overflow-y: auto;"></pre>
+  <h2>QR Code Scanner with Enhanced Settings</h2>
+  <div id="reader"></div>
+  <div id="status"></div>
+  <pre id="result"></pre>
 
   <script>
-    let localConnection;
-    let dataChannel;
-    let receiveChannel;
-
-    const myQRDiv = document.getElementById('myQR');
     const statusDiv = document.getElementById('status');
-    const messagesDiv = document.getElementById('messages');
-    const sendBtn = document.getElementById('sendBtn');
-    const msgInput = document.getElementById('msgInput');
+    const resultPre = document.getElementById('result');
 
-    // Create Html5Qrcode scanner instance
+    // Initialize scanner
     const html5QrcodeScanner = new Html5Qrcode("reader");
 
-    function logStatus(msg) {
+    function updateStatus(msg) {
       statusDiv.textContent = msg;
     }
 
-    function logMessage(msg) {
-      messagesDiv.textContent += msg + "\n";
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    function displayResult(text) {
+      resultPre.textContent = text;
+      setTimeout(() => { resultPre.textContent = ''; }, 8000);
     }
 
-    function generateQRFromSDP(sdp) {
-      const jsonStr = JSON.stringify(sdp);
-      const compressed = LZString.compressToBase64(jsonStr);
-      myQRDiv.innerHTML = "";
-      new QRCode(myQRDiv, { text: compressed, width: 250, height: 250 });
+    function onScanSuccess(decodedText, decodedResult) {
+      updateStatus("QR Code detected!");
+      displayResult(decodedText);
+      html5QrcodeScanner.pause();
+      // Handle the scanned data here or resume scan if needed: html5QrcodeScanner.resume();
     }
 
-    function decompressSDP(compressed) {
-      const jsonStr = LZString.decompressFromBase64(compressed);
-      return JSON.parse(jsonStr);
+    function onScanError(errorMessage) {
+      // No console spam: comment out in production
+      // console.log("Error scanning: ", errorMessage);
     }
 
-    async function createOffer() {
-      localConnection = new RTCPeerConnection();
-
-      dataChannel = localConnection.createDataChannel("chat");
-      setupDataChannel();
-
-      localConnection.onicecandidate = e => {
-        if (!e.candidate) {
-          generateQRFromSDP(localConnection.localDescription);
-          logStatus("Offer created. Scan this QR code on remote device.");
-        }
-      };
-
-      try {
-        const offer = await localConnection.createOffer();
-        await localConnection.setLocalDescription(offer);
-      } catch (e) {
-        logStatus("Error creating offer: " + e);
-      }
-    }
-
-    async function onRemoteSDPReceived(compressedSDP) {
-      try {
-        const remoteSDP = decompressSDP(compressedSDP.trim());
-
-        if (!localConnection) {
-          // Answerer role
-          localConnection = new RTCPeerConnection();
-
-          localConnection.ondatachannel = event => {
-            receiveChannel = event.channel;
-            setupReceiveChannel();
-          };
-
-          localConnection.onicecandidate = e => {
-            if (!e.candidate) {
-              generateQRFromSDP(localConnection.localDescription);
-              logStatus("Answer created. Scan this QR code on remote device.");
-            }
-          };
-
-          await localConnection.setRemoteDescription(remoteSDP);
-          const answer = await localConnection.createAnswer();
-          await localConnection.setLocalDescription(answer);
-
-        } else {
-          // Offerer receives answer
-          await localConnection.setRemoteDescription(remoteSDP);
-          logStatus("Connection established!");
-        }
-      } catch (error) {
-        logStatus("Error processing remote SDP: " + error);
-      }
-    }
-
-    function setupDataChannel() {
-      dataChannel.onopen = () => logStatus("Data channel opened");
-      dataChannel.onmessage = e => logMessage("Remote: " + e.data);
-      dataChannel.onclose = () => logStatus("Data channel closed");
-    }
-
-    function setupReceiveChannel() {
-      receiveChannel.onopen = () => logStatus("Data channel opened");
-      receiveChannel.onmessage = e => logMessage("Remote: " + e.data);
-      receiveChannel.onclose = () => logStatus("Data channel closed");
-    }
-
-    sendBtn.onclick = () => {
-      const msg = msgInput.value.trim();
-      if (!msg) return;
-
-      const channel = (dataChannel && dataChannel.readyState === "open") ? dataChannel :
-        (receiveChannel && receiveChannel.readyState === "open") ? receiveChannel : null;
-
-      if (!channel) {
-        alert("Connection not established");
-        return;
-      }
-
-      channel.send(msg);
-      logMessage("You: " + msg);
-      msgInput.value = "";
-    };
-
-    // Start QR Scanner on back camera with optimized config
+    // Start scanning with optimized config
     html5QrcodeScanner.start(
-      { facingMode: "environment" },
+      { facingMode: { exact: "environment" } }, // Use back camera
       {
-        fps: 15,
-        qrbox: { width: 250, height: 250 },
-        aspectRatio: 1.0,
+        fps: 20,                   // Higher fps for smoother scan
+        qrbox: { width: 280, height: 280 },
+        aspectRatio: 1.25,
         disableFlip: false,
+        experimentalFeatures: {
+          useBarCodeDetectorIfSupported: true // Use native barcode detector if supported for better perf
+        },
+        verbose: false
       },
-      qrCodeMessage => {
-        logStatus("QR code scanned. Processing SDP...");
-        html5QrcodeScanner.pause();
-        onRemoteSDPReceived(qrCodeMessage);
-        // Resume scanning after 15s to avoid multiple reads
-        setTimeout(() => {
-          html5QrcodeScanner.resume();
-          logStatus("Ready to scan next SDP QR code.");
-        }, 15000);
-      },
-      errorMessage => {
-        // Optionally handle scan failure or errors
-        // console.log("Scan error:", errorMessage);
-      }
-    ).catch(err => {
-      logStatus("Could not start QR scanner: " + err);
+      onScanSuccess,
+      onScanError
+    ).then(() => {
+      updateStatus("Scanner started, point camera at QR Code.");
+    }).catch(err => {
+      updateStatus("Failed to start scanner: " + err);
     });
 
-    // Create offer automatically on load (caller mode)
-    createOffer();
+    // Optionally, stop scanner after some time or on user interaction
+    // setTimeout(() => html5QrcodeScanner.stop(), 60000);
   </script>
 </body>
 </html>
