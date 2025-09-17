@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC QR Signaling Demo</title>
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style> #qrContainer { display:flex; gap:20px; } </style>
+</head>
+<body>
+<h1>WebRTC QR Signaling Demo</h1>
+
+<div id="qrContainer">
+  <div>
+    <h3>My SDP QR</h3>
+    <div id="myQR"></div>
+  </div>
+  <div>
+    <h3>Scan Remote SDP QR</h3>
+    <div id="reader" style="width:300px;"></div>
+  </div>
+</div>
+
+<h3>Status</h3>
+<div id="status">Idle</div>
+
+<h3>Send Message</h3>
+<input id="msgInput" />
+<button id="sendBtn">Send</button>
+
+<h3>Messages</h3>
+<pre id="messages"></pre>
+
+<script>
+  let localConnection;
+  let dataChannel;
+  let receiveChannel;
+
+  const myQRDiv = document.getElementById('myQR');
+  const statusDiv = document.getElementById('status');
+  const messagesDiv = document.getElementById('messages');
+  const sendBtn = document.getElementById('sendBtn');
+  const msgInput = document.getElementById('msgInput');
+
+  // Initialize Html5Qrcode scanner
+  const html5QrcodeScanner = new Html5Qrcode("reader");
+
+  function logStatus(msg) {
+    statusDiv.textContent = msg;
+  }
+
+  function logMessage(msg) {
+    messagesDiv.textContent += msg + "\n";
+  }
+
+  // Compress and generate QR from JSON SDP
+  function generateQRFromSDP(sdp) {
+    const jsonStr = JSON.stringify(sdp);
+    const compressed = LZString.compressToBase64(jsonStr);
+    myQRDiv.innerHTML = "";
+    new QRCode(myQRDiv, { text: compressed, width: 250, height: 250 });
+  }
+
+  // Decompress and parse SDP JSON
+  function decompressSDP(compressed) {
+    const jsonStr = LZString.decompressFromBase64(compressed);
+    return JSON.parse(jsonStr);
+  }
+
+  // Create local offer SDP and show QR
+  async function createOffer() {
+    localConnection = new RTCPeerConnection();
+    dataChannel = localConnection.createDataChannel("chat");
+    setupDataChannel();
+
+    localConnection.onicecandidate = e => {
+      if (!e.candidate) {
+        // ICE gathering finished, generate QR code of sdp
+        generateQRFromSDP(localConnection.localDescription);
+        logStatus("Offer created, scan it with remote device.");
+      }
+    };
+
+    const offer = await localConnection.createOffer();
+    await localConnection.setLocalDescription(offer);
+  }
+
+  // Handle received compressed remote SDP via QR scan
+  async function onRemoteSDPReceived(compressedSDP) {
+    const remoteSDP = decompressSDP(compressedSDP);
+
+    if (!localConnection) {
+      // Acting as answerer
+      localConnection = new RTCPeerConnection();
+      localConnection.ondatachannel = event => {
+        receiveChannel = event.channel;
+        setupReceiveChannel();
+      };
+      localConnection.onicecandidate = e => {
+        if (!e.candidate) {
+          // Answer ready, generate QR
+          generateQRFromSDP(localConnection.localDescription);
+          logStatus("Answer created, scan it with remote device.");
+        }
+      };
+
+      await localConnection.setRemoteDescription(remoteSDP);
+      const answer = await localConnection.createAnswer();
+      await localConnection.setLocalDescription(answer);
+    } else {
+      // Acting as offerer receiving answer
+      await localConnection.setRemoteDescription(remoteSDP);
+      logStatus("Connection established!");
+    }
+  }
+
+  // Setup data channel events (sender side)
+  function setupDataChannel() {
+    dataChannel.onopen = () => logStatus("Data channel open");
+    dataChannel.onmessage = e => logMessage("Peer: " + e.data);
+    dataChannel.onclose = () => logStatus("Data channel closed");
+  }
+
+  // Setup receive data channel events
+  function setupReceiveChannel() {
+    receiveChannel.onopen = () => logStatus("Data channel open");
+    receiveChannel.onmessage = e => logMessage("Peer: " + e.data);
+    receiveChannel.onclose = () => logStatus("Data channel closed");
+  }
+
+  // Send message over data channel
+  sendBtn.onclick = () => {
+    const msg = msgInput.value;
+    if ((dataChannel && dataChannel.readyState === "open") || (receiveChannel && receiveChannel.readyState === "open")) {
+      const channel = dataChannel.readyState === "open" ? dataChannel : receiveChannel;
+      channel.send(msg);
+      logMessage("You: " + msg);
+      msgInput.value = "";
+    } else {
+      alert("Data channel not connected");
+    }
+  };
+
+  // Start QR scanner
+  html5QrcodeScanner.start(
+    { facingMode: "environment" }, 
+    { fps: 10, qrbox: 250 },
+    qrCodeMessage => {
+      logStatus("Scanned SDP QR, processing...");
+      onRemoteSDPReceived(qrCodeMessage.trim());
+      html5QrcodeScanner.stop();
+    },
+    errorMessage => {
+      // ignore scan errors
+    }
+  ).catch(console.error);
+
+  // Start as offerer
+  createOffer();
+</script>
+
+</body>
+</html>
