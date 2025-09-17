@@ -2,73 +2,83 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>WebRTC Manual Signaling with QR Codes</title>
+  <title>WebRTC QR Signaling Demo</title>
   <style>
-    textarea { width: 100%; height: 60px; }
+    textarea { width: 100%; height: 60px; margin: 6px 0; }
     button { margin: 5px; }
     #qrOffer, #qrAnswer { margin: 10px 0; }
   </style>
+  <!-- QRCode.js CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script src="https://unpkg.com/html5-qrcode"></script>
+   <script src="https://unpkg.com/html5-qrcode"></script>
 </head>
 <body>
-  <h2>WebRTC Signaling with QR Codes</h2>
+  <h2>WebRTC QR Code Signaling</h2>
 
-  <!-- Caller controls -->
-  <button id="createOfferBtn">Create Offer (Caller)</button>
+  <!-- Caller section -->
+  <button id="createOfferBtn">Create Offer (Caller)</button><br>
   <div id="qrOffer"></div>
+  <label>Offer SDP (copy/share with Receiver):</label><br>
+  <textarea id="offerSDP" readonly></textarea><br>
 
-  <!-- Receiver scanning caller's offer -->
-  <h4>Scan Offer QR (Receiver)</h4>
-  <div id="reader" style="width:300px;"></div>
-
-  <!-- Answer display -->
-  <h4>Answer SDP (Receiver creates)</h4>
-  <textarea id="answerSDP" readonly></textarea>
+  <!-- Receiver section -->
+  <label>Paste Offer SDP (from Caller):</label><br>
+  <textarea id="remoteOfferSDP"></textarea><br>
+  <button id="receiveOfferBtn">Receive Offer & Create Answer</button><br>
   <div id="qrAnswer"></div>
+  <label>Answer SDP (copy/share with Caller):</label><br>
+  <textarea id="answerSDP" readonly></textarea><br>
 
-  <!-- Caller scans answer -->
-  <h4>Scan Answer QR (Caller)</h4>
-  <div id="readerAnswer" style="width:300px;"></div>
+  <label>Paste Answer SDP (from Receiver):</label><br>
+  <textarea id="remoteAnswerSDP"></textarea><br>
+  <button id="receiveAnswerBtn">Receive Answer (Caller)</button><br><br>
 
-  <!-- Messages and input -->
-  <h3>Messages</h3>
-  <pre id="messages"></pre>
-  <input id="messageInput" placeholder="Type message" />
+  <label>Send Message:</label>
+  <input type="text" id="messageInput" />
   <button id="sendMessageBtn">Send</button>
 
-  <script>
-    let localConnection;
-    let remoteConnection;
-    let dataChannel;
-    let receiveChannel;
+  <h3>Messages:</h3>
+  <pre id="messages"></pre>
 
+  <script>
+    let localConnection, remoteConnection, dataChannel, receiveChannel;
+    const offerSDPTextarea = document.getElementById('offerSDP');
+    const answerSDPTextarea = document.getElementById('answerSDP');
+    const remoteOfferSDPTextarea = document.getElementById('remoteOfferSDP');
+    const remoteAnswerSDPTextarea = document.getElementById('remoteAnswerSDP');
     const qrOfferDiv = document.getElementById('qrOffer');
     const qrAnswerDiv = document.getElementById('qrAnswer');
-    const answerSDPTextarea = document.getElementById('answerSDP');
     const messagesPre = document.getElementById('messages');
     const messageInput = document.getElementById('messageInput');
 
     const config = { iceServers: [] };
-    let html5QrcodeScanner;
-    let html5QrcodeScannerAnswer;
 
     function appendMessage(msg) {
       messagesPre.textContent += msg + '\n';
     }
 
-    // Caller: Create WebRTC offer and display QR code
+    function generateQR(div, data) {
+      div.innerHTML = "";
+      // QR Code.js limitation: avoid generating very large QR (see note).
+      try {
+        new QRCode(div, { text: data, width: 256, height: 256 });
+      } catch (err) {
+        div.innerHTML = "QR generation error: " + err;
+      }
+    }
+
     document.getElementById('createOfferBtn').onclick = async () => {
+      qrOfferDiv.innerHTML = "";
       localConnection = new RTCPeerConnection(config);
 
       dataChannel = localConnection.createDataChannel('dataChannel');
-      setupDataChannel();
+      setupDataChannel(dataChannel);
 
       localConnection.onicecandidate = event => {
         if (event.candidate === null) {
-          const offerSDPText = JSON.stringify(localConnection.localDescription);
-          qrOfferDiv.innerHTML = '';
-          new QRCode(qrOfferDiv, { text: offerSDPText, width: 250, height: 250 });
+          const offerSDP = JSON.stringify(localConnection.localDescription);
+          offerSDPTextarea.value = offerSDP;
+          generateQR(qrOfferDiv, offerSDP);
         }
       };
 
@@ -80,104 +90,72 @@
       }
     };
 
-    // Receiver: Scan caller's SDP offer QR code and create answer
-    function startOfferScan() {
-      if (html5QrcodeScanner) html5QrcodeScanner.clear();
-      html5QrcodeScanner = new Html5Qrcode("reader");
+    document.getElementById('receiveOfferBtn').onclick = async () => {
+      qrAnswerDiv.innerHTML = "";
+      const offerSDPString = remoteOfferSDPTextarea.value.trim();
+      if (!offerSDPString) { alert("Paste Offer SDP."); return; }
+      let offerSDP;
+      try { offerSDP = JSON.parse(offerSDPString); }
+      catch (err) { alert("Invalid Offer SDP JSON."); return; }
 
-      html5QrcodeScanner.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: 250 },
-        qrCodeMessage => {
-          html5QrcodeScanner.stop();
-          handleReceivedOffer(qrCodeMessage);
-        },
-        errorMessage => {
-          // console.log('QR scan error', errorMessage);
-        }
-      ).catch(err => console.error('QR scan failed to start', err));
-    }
-
-    async function handleReceivedOffer(offerSDPText) {
       remoteConnection = new RTCPeerConnection(config);
 
       remoteConnection.ondatachannel = event => {
         receiveChannel = event.channel;
-        receiveChannel.onmessage = e => appendMessage('Received: ' + e.data);
-        receiveChannel.onopen = () => appendMessage('Data channel open');
-        receiveChannel.onclose = () => appendMessage('Data channel closed');
+        setupDataChannel(receiveChannel);
       };
 
       remoteConnection.onicecandidate = event => {
         if (event.candidate === null) {
-          // After ICE gathering complete, create QR for answer
-          const answerSDPText = JSON.stringify(remoteConnection.localDescription);
-          answerSDPTextarea.value = answerSDPText;
-          qrAnswerDiv.innerHTML = '';
-          new QRCode(qrAnswerDiv, { text: answerSDPText, width: 250, height: 250 });
-          startAnswerScan(); // Start scanning caller's answer QR
+          const answerSDP = JSON.stringify(remoteConnection.localDescription);
+          answerSDPTextarea.value = answerSDP;
+          generateQR(qrAnswerDiv, answerSDP);
         }
       };
 
       try {
-        const offerSDP = JSON.parse(offerSDPText);
         await remoteConnection.setRemoteDescription(offerSDP);
         const answer = await remoteConnection.createAnswer();
         await remoteConnection.setLocalDescription(answer);
       } catch (e) {
-        alert('Error processing offer: ' + e);
-      }
-    }
-
-    // Caller: Scan receiver's answer QR and finalize connection
-    function startAnswerScan() {
-      if (html5QrcodeScannerAnswer) html5QrcodeScannerAnswer.clear();
-      html5QrcodeScannerAnswer = new Html5Qrcode("readerAnswer");
-
-      html5QrcodeScannerAnswer.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: 250 },
-        qrCodeMessage => {
-          html5QrcodeScannerAnswer.stop();
-          handleReceivedAnswer(qrCodeMessage);
-        },
-        errorMessage => {
-          // console.log('Answer QR scan error', errorMessage);
-        }
-      ).catch(err => console.error('Answer QR scan failed to start', err));
-    }
-
-    async function handleReceivedAnswer(answerSDPText) {
-      try {
-        const answerSDP = JSON.parse(answerSDPText);
-        await localConnection.setRemoteDescription(answerSDP);
-        appendMessage('Connection established! You can send messages now.');
-      } catch (e) {
-        alert('Error processing answer: ' + e);
-      }
-    }
-
-    // Setup data channel event handlers for sending device
-    function setupDataChannel() {
-      dataChannel.onopen = () => appendMessage('Send channel open');
-      dataChannel.onclose = () => appendMessage('Send channel closed');
-      dataChannel.onmessage = e => appendMessage('Received: ' + e.data);
-    }
-
-    // Send message button
-    document.getElementById('sendMessageBtn').onclick = () => {
-      if (dataChannel && dataChannel.readyState === 'open') {
-        const message = messageInput.value;
-        dataChannel.send(message);
-        appendMessage('Sent: ' + message);
-        messageInput.value = '';
-      } else {
-        alert('Data channel not open');
+        alert('Error receiving offer: ' + e);
       }
     };
 
-    // Start scanning for offer QR on page load to simulate receiver scanning
-    startOfferScan();
+    document.getElementById('receiveAnswerBtn').onclick = async () => {
+      const answerSDPString = remoteAnswerSDPTextarea.value.trim();
+      if (!answerSDPString) { alert("Paste Answer SDP."); return; }
+      let answerSDP;
+      try { answerSDP = JSON.parse(answerSDPString); }
+      catch (err) { alert("Invalid Answer SDP JSON."); return; }
+      try {
+        await localConnection.setRemoteDescription(answerSDP);
+        appendMessage('Connection established! Send a test message.');
+      } catch (e) {
+        alert('Error receiving answer: ' + e);
+      }
+    };
+
+    function setupDataChannel(channel) {
+      channel.onopen = () => appendMessage('Channel open');
+      channel.onclose = () => appendMessage('Channel closed');
+      channel.onmessage = e => appendMessage('Received: ' + e.data);
+    }
+
+    document.getElementById('sendMessageBtn').onclick = () => {
+      const msg = messageInput.value;
+      if (dataChannel && dataChannel.readyState === 'open') {
+        dataChannel.send(msg);
+        appendMessage('Sent: ' + msg);
+        messageInput.value = '';
+      } else if (receiveChannel && receiveChannel.readyState === 'open') {
+        receiveChannel.send(msg);
+        appendMessage('Sent: ' + msg);
+        messageInput.value = '';
+      } else {
+        appendMessage('Channel not open for sending.');
+      }
+    };
   </script>
 </body>
 </html>
