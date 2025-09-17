@@ -1,162 +1,91 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>WebRTC QR Signaling Demo</title>
-  <style>
-    textarea { width: 100%; height: 60px; margin: 6px 0; }
-    button { margin: 5px; }
-    #qrOffer, #qrAnswer { margin: 10px 0; }
-  </style>
-  <!-- QRCode.js CDN -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode/1.4.4/qrcode.min.js"></script>
-   <script src="https://unpkg.com/html5-qrcode"></script>
+  <meta charset="UTF-8">
+  <title>Offline WebRTC Manual Signaling</title>
+  <style>textarea{width:100%;height:80px;}</style>
 </head>
 <body>
-  <h2>WebRTC QR Code Signaling</h2>
+<h2>WebRTC Manual Signaling Demo</h2>
 
-  <!-- Caller section -->
-  <button id="createOfferBtn">Create Offer (Caller)</button><br>
-  <div id="qrOffer"></div>
-  <label>Offer SDP (copy/share with Receiver):</label><br>
-  <textarea id="offerSDP" readonly></textarea><br>
+<!-- Section for Caller -->
+<button onclick="createOffer()">1. Create Offer (Device A)</button>
+<textarea id="offerSDP" placeholder="Offer SDP will appear here"></textarea>
+<!-- Section for Receiver -->
+<textarea id="remoteOfferSDP" placeholder="Paste Offer SDP here"></textarea>
+<button onclick="receiveOffer()">2. Receive Offer & Create Answer (Device B)</button>
+<textarea id="answerSDP" placeholder="Answer SDP will appear here"></textarea>
+<textarea id="remoteAnswerSDP" placeholder="Paste Answer SDP here"></textarea>
+<button onclick="receiveAnswer()">3. Receive Answer (Device A)</button>
+<hr>
+<input id="messageInput" placeholder="Enter message"/>
+<button onclick="sendMessage()">Send</button>
+<pre id="messages"></pre>
 
-  <!-- Receiver section -->
-  <label>Paste Offer SDP (from Caller):</label><br>
-  <textarea id="remoteOfferSDP"></textarea><br>
-  <button id="receiveOfferBtn">Receive Offer & Create Answer</button><br>
-  <div id="qrAnswer"></div>
-  <label>Answer SDP (copy/share with Caller):</label><br>
-  <textarea id="answerSDP" readonly></textarea><br>
+<script>
+let localConnection, remoteConnection, sendChannel, receiveChannel;
 
-  <label>Paste Answer SDP (from Receiver):</label><br>
-  <textarea id="remoteAnswerSDP"></textarea><br>
-  <button id="receiveAnswerBtn">Receive Answer (Caller)</button><br><br>
-
-  <label>Send Message:</label>
-  <input type="text" id="messageInput" />
-  <button id="sendMessageBtn">Send</button>
-
-  <h3>Messages:</h3>
-  <pre id="messages"></pre>
-
-  <script>
-    let localConnection, remoteConnection, dataChannel, receiveChannel;
-    const offerSDPTextarea = document.getElementById('offerSDP');
-    const answerSDPTextarea = document.getElementById('answerSDP');
-    const remoteOfferSDPTextarea = document.getElementById('remoteOfferSDP');
-    const remoteAnswerSDPTextarea = document.getElementById('remoteAnswerSDP');
-    const qrOfferDiv = document.getElementById('qrOffer');
-    const qrAnswerDiv = document.getElementById('qrAnswer');
-    const messagesPre = document.getElementById('messages');
-    const messageInput = document.getElementById('messageInput');
-
-    const config = { iceServers: [] };
-
-    function appendMessage(msg) {
-      messagesPre.textContent += msg + '\n';
+// Device A: create offer and data channel
+function createOffer() {
+  localConnection = new RTCPeerConnection();
+  sendChannel = localConnection.createDataChannel("data");
+  sendChannel.onmessage = e => showMsg('Peer: ' + e.data);
+  sendChannel.onopen = () => showMsg('Data channel open');
+  sendChannel.onclose = () => showMsg('Data channel closed');
+  localConnection.onicecandidate = e => {
+    if (e.candidate === null) {
+      document.getElementById('offerSDP').value = JSON.stringify(localConnection.localDescription);
     }
+  };
+  localConnection.createOffer()
+    .then(offer => localConnection.setLocalDescription(offer));
+}
 
-    function generateQR(div, data) {
-      div.innerHTML = "";
-      // QR Code.js limitation: avoid generating very large QR (see note).
-      try {
-        new QRCode(div, { text: data, width: 256, height: 256 });
-      } catch (err) {
-        div.innerHTML = "QR generation error: " + err;
-      }
+// Device B: receive offer, create answer
+function receiveOffer() {
+  let sdp = document.getElementById('remoteOfferSDP').value;
+  if (!sdp) return alert("Paste Offer SDP first!");
+  remoteConnection = new RTCPeerConnection();
+  remoteConnection.ondatachannel = event => {
+    receiveChannel = event.channel;
+    receiveChannel.onmessage = e => showMsg('Peer: ' + e.data);
+    receiveChannel.onopen = () => showMsg('Data channel open');
+    receiveChannel.onclose = () => showMsg('Data channel closed');
+  };
+  remoteConnection.onicecandidate = e => {
+    if (e.candidate === null) {
+      document.getElementById('answerSDP').value = JSON.stringify(remoteConnection.localDescription);
     }
+  };
+  remoteConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(sdp)))
+    .then(() => remoteConnection.createAnswer())
+    .then(answer => remoteConnection.setLocalDescription(answer));
+}
 
-    document.getElementById('createOfferBtn').onclick = async () => {
-      qrOfferDiv.innerHTML = "";
-      localConnection = new RTCPeerConnection(config);
+// Device A: finalize by pasting the answer
+function receiveAnswer() {
+  let sdp = document.getElementById('remoteAnswerSDP').value;
+  if (!sdp) return alert("Paste Answer SDP first!");
+  localConnection.setRemoteDescription(new RTCSessionDescription(JSON.parse(sdp)));
+}
 
-      dataChannel = localConnection.createDataChannel('dataChannel');
-      setupDataChannel(dataChannel);
+// Send message—works on whichever peer created a data channel
+function sendMessage() {
+  let msg = document.getElementById('messageInput').value;
+  if (sendChannel && sendChannel.readyState === 'open') {
+    sendChannel.send(msg);
+    showMsg('You: ' + msg);
+  } else if (receiveChannel && receiveChannel.readyState === 'open') {
+    receiveChannel.send(msg);
+    showMsg('You: ' + msg);
+  } else {
+    alert('Data channel not open yet!');
+  }
+}
 
-      localConnection.onicecandidate = event => {
-        if (event.candidate === null) {
-          const offerSDP = JSON.stringify(localConnection.localDescription);
-          offerSDPTextarea.value = offerSDP;
-          generateQR(qrOfferDiv, offerSDP);
-        }
-      };
-
-      try {
-        const offer = await localConnection.createOffer();
-        await localConnection.setLocalDescription(offer);
-      } catch (e) {
-        alert('Error creating offer: ' + e);
-      }
-    };
-
-    document.getElementById('receiveOfferBtn').onclick = async () => {
-      qrAnswerDiv.innerHTML = "";
-      const offerSDPString = remoteOfferSDPTextarea.value.trim();
-      if (!offerSDPString) { alert("Paste Offer SDP."); return; }
-      let offerSDP;
-      try { offerSDP = JSON.parse(offerSDPString); }
-      catch (err) { alert("Invalid Offer SDP JSON."); return; }
-
-      remoteConnection = new RTCPeerConnection(config);
-
-      remoteConnection.ondatachannel = event => {
-        receiveChannel = event.channel;
-        setupDataChannel(receiveChannel);
-      };
-
-      remoteConnection.onicecandidate = event => {
-        if (event.candidate === null) {
-          const answerSDP = JSON.stringify(remoteConnection.localDescription);
-          answerSDPTextarea.value = answerSDP;
-          generateQR(qrAnswerDiv, answerSDP);
-        }
-      };
-
-      try {
-        await remoteConnection.setRemoteDescription(offerSDP);
-        const answer = await remoteConnection.createAnswer();
-        await remoteConnection.setLocalDescription(answer);
-      } catch (e) {
-        alert('Error receiving offer: ' + e);
-      }
-    };
-
-    document.getElementById('receiveAnswerBtn').onclick = async () => {
-      const answerSDPString = remoteAnswerSDPTextarea.value.trim();
-      if (!answerSDPString) { alert("Paste Answer SDP."); return; }
-      let answerSDP;
-      try { answerSDP = JSON.parse(answerSDPString); }
-      catch (err) { alert("Invalid Answer SDP JSON."); return; }
-      try {
-        await localConnection.setRemoteDescription(answerSDP);
-        appendMessage('Connection established! Send a test message.');
-      } catch (e) {
-        alert('Error receiving answer: ' + e);
-      }
-    };
-
-    function setupDataChannel(channel) {
-      channel.onopen = () => appendMessage('Channel open');
-      channel.onclose = () => appendMessage('Channel closed');
-      channel.onmessage = e => appendMessage('Received: ' + e.data);
-    }
-
-    document.getElementById('sendMessageBtn').onclick = () => {
-      const msg = messageInput.value;
-      if (dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send(msg);
-        appendMessage('Sent: ' + msg);
-        messageInput.value = '';
-      } else if (receiveChannel && receiveChannel.readyState === 'open') {
-        receiveChannel.send(msg);
-        appendMessage('Sent: ' + msg);
-        messageInput.value = '';
-      } else {
-        appendMessage('Channel not open for sending.');
-      }
-    };
-  </script>
+function showMsg(msg) {
+  document.getElementById('messages').textContent += msg + '\n';
+}
+</script>
 </body>
 </html>
-
