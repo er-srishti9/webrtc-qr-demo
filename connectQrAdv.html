@@ -1,71 +1,207 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Enhanced QR Scanner with html5-qrcode</title>
+  <title>WebRTC QR Code Signaling Example</title>
   <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script src="https://unpkg.com/html5-qrcode@2.3.7/minified/html5-qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
-    #reader { width: 100%; max-width: 400px; height: 300px; }
+    #container {
+      display: flex;
+      gap: 40px;
+      justify-content: center;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+    #myQR, #reader {
+      max-width: 300px;
+      text-align: center;
+    }
+    #messages {
+      border: 1px solid #ccc;
+      padding: 10px;
+      max-width: 500px;
+      height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      margin: 20px auto;
+    }
+    input, button {
+      font-size: 1em;
+      padding: 8px;
+      margin-right: 10px;
+      width: 250px;
+      max-width: 90vw;
+    }
+    button {
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
-  <h2>QR Code Scanner with Enhanced Settings</h2>
-  <div id="reader"></div>
-  <div id="status"></div>
-  <pre id="result"></pre>
 
-  <script>
-    const statusDiv = document.getElementById('status');
-    const resultPre = document.getElementById('result');
+<h1 style="text-align:center;">WebRTC QR Code Signaling Demo</h1>
 
-    // Initialize scanner
-    const html5QrcodeScanner = new Html5Qrcode("reader");
+<div id="container">
+  <div id="myQR">
+    <h3>Your SDP QR Code</h3>
+  </div>
+  <div>
+    <h3>Scan Remote SDP QR Code</h3>
+    <div id="reader" style="width: 300px; height: 300px;"></div>
+  </div>
+</div>
 
-    function updateStatus(msg) {
-      statusDiv.textContent = msg;
-    }
+<div style="text-align:center; margin-top:20px;">
+  <input type="text" id="message" placeholder="Type message here" />
+  <button id="sendBtn">Send</button>
+</div>
 
-    function displayResult(text) {
-      resultPre.textContent = text;
-      setTimeout(() => { resultPre.textContent = ''; }, 8000);
-    }
+<pre id="messages"></pre>
 
-    function onScanSuccess(decodedText, decodedResult) {
-      updateStatus("QR Code detected!");
-      displayResult(decodedText);
-      html5QrcodeScanner.pause();
-      // Handle the scanned data here or resume scan if needed: html5QrcodeScanner.resume();
-    }
+<script>
+  const myQRDiv = document.getElementById('myQR');
+  const statusDiv = document.getElementById('status');
+  const messagesDiv = document.getElementById('messages');
+  const sendBtn = document.getElementById('sendBtn');
+  const messageInput = document.getElementById('message');
 
-    function onScanError(errorMessage) {
-      // No console spam: comment out in production
-      // console.log("Error scanning: ", errorMessage);
-    }
+  let localConnection;
+  let dataChannel;
+  let receiveChannel;
 
-    // Start scanning with optimized config
-    html5QrcodeScanner.start(
-      { facingMode: { exact: "environment" } }, // Use back camera
-      {
-        fps: 20,                   // Higher fps for smoother scan
-        qrbox: { width: 280, height: 280 },
-        aspectRatio: 1.25,
-        disableFlip: false,
-        experimentalFeatures: {
-          useBarCodeDetectorIfSupported: true // Use native barcode detector if supported for better perf
-        },
-        verbose: false
-      },
-      onScanSuccess,
-      onScanError
-    ).then(() => {
-      updateStatus("Scanner started, point camera at QR Code.");
-    }).catch(err => {
-      updateStatus("Failed to start scanner: " + err);
+  // Initialize html5-qrcode scanner
+  const html5QrcodeScanner = new Html5Qrcode("reader");
+
+  // Display messages
+  function logMessage(msg) {
+    messagesDiv.textContent += msg + "\n";
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  }
+
+  function generateQR(sdp) {
+    const sdpJson = JSON.stringify(sdp);
+    const compressed = LZString.compressToBase64(sdpJson);
+    myQRDiv.innerHTML = "<h3>Your SDP QR Code</h3>";
+    new QRCode(myQRDiv, {
+      text: compressed,
+      width: 280,
+      height: 280
     });
+  }
 
-    // Optionally, stop scanner after some time or on user interaction
-    // setTimeout(() => html5QrcodeScanner.stop(), 60000);
-  </script>
+  function decompressSDP(compressed) {
+    let decompressed = LZString.decompressFromBase64(compressed);
+    return JSON.parse(decompressed);
+  }
+
+  async function createOffer() {
+    localConnection = new RTCPeerConnection();
+
+    dataChannel = localConnection.createDataChannel("chat");
+    setupDataChannelEvents();
+
+    localConnection.onicecandidate = (event) => {
+      if (!event.candidate) {
+        // ICE gathering complete
+        generateQR(localConnection.localDescription);
+        logMessage("Offer SDP generated. Share your QR code.");
+      }
+    };
+
+    const offer = await localConnection.createOffer();
+    await localConnection.setLocalDescription(offer);
+  }
+
+  async function onRemoteSDPReceived(compressedSDP) {
+    const remoteSDP = decompressSDP(compressedSDP.trim());
+
+    if (!localConnection) {
+      // We are answerer
+      localConnection = new RTCPeerConnection();
+
+      localConnection.ondatachannel = (event) => {
+        receiveChannel = event.channel;
+        setupReceiveChannelEvents();
+      };
+
+      localConnection.onicecandidate = (event) => {
+        if (!event.candidate) {
+          generateQR(localConnection.localDescription);
+          logMessage("Answer SDP generated. Share your QR code.");
+        }
+      };
+
+      await localConnection.setRemoteDescription(remoteSDP);
+      const answer = await localConnection.createAnswer();
+      await localConnection.setLocalDescription(answer);
+
+    } else {
+      // We are offerer receiving answer
+      await localConnection.setRemoteDescription(remoteSDP);
+      logMessage("Connection established! You can send messages now.");
+    }
+  }
+
+  // Setup data channel events for sender
+  function setupDataChannelEvents() {
+    dataChannel.onopen = () => logMessage("Data channel open");
+    dataChannel.onclose = () => logMessage("Data channel closed");
+    dataChannel.onmessage = (event) => logMessage("Remote: " + event.data);
+  }
+
+  // Setup data channel events for receiver
+  function setupReceiveChannelEvents() {
+    receiveChannel.onopen = () => logMessage("Data channel open");
+    receiveChannel.onclose = () => logMessage("Data channel closed");
+    receiveChannel.onmessage = (event) => logMessage("Remote: " + event.data);
+  }
+
+  sendBtn.onclick = () => {
+    const msg = messageInput.value.trim();
+    if (!msg) return;
+
+    if ((dataChannel && dataChannel.readyState === "open")) {
+      dataChannel.send(msg);
+      logMessage("You: " + msg);
+    } else if ((receiveChannel && receiveChannel.readyState === "open")) {
+      receiveChannel.send(msg);
+      logMessage("You: " + msg);
+    } else {
+      alert("Data channel not open. Cannot send message.");
+    }
+    messageInput.value = "";
+  };
+
+  // Start QR code scanner with back camera
+  html5QrcodeScanner.start(
+    { facingMode: { exact: "environment" } },
+    {
+      fps: 15,
+      qrbox: 280,
+      aspectRatio: 1,
+      disableFlip: false
+    },
+    (decodedText) => {
+      logMessage("Scanned SDP QR code.");
+      html5QrcodeScanner.pause();
+      onRemoteSDPReceived(decodedText);
+      // Resume scanning after 15 seconds for next possible SDP
+      setTimeout(() => {
+        html5QrcodeScanner.resume();
+      }, 15000);
+    },
+    (errorMessage) => {
+      // You can log scan errors if you want
+    }
+  ).catch((err) => {
+    alert("Unable to start scanning: " + err);
+  });
+
+  // Start as the Offerer, creates offer and shows QR
+  createOffer();
+
+</script>
+
 </body>
 </html>
